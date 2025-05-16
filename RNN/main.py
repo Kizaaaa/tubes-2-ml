@@ -106,6 +106,6 @@ manual_preds = np.array(manual_preds)  # (num_samples, num_classes)
 manual_pred_classes = manual_preds.argmax(axis=1)
 
 # Evaluasi hasil manual forward
-print("Manual Forward Validation F1_score:", (manual_pred_classes == labels_valid).mean())
+print("Manual Forward Validation F1_score:", f1_score(labels_valid, manual_pred_classes, average='macro'))
 print("Manual Forward Classification Report:")
 print(classification_report(labels_valid, manual_pred_classes, target_names=label_encoder.classes_))
