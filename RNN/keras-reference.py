@@ -53,8 +53,8 @@ predictions = model.predict(tokenized_texts_valid)
 # Mengambil kelas dengan probabilitas tertinggi
 predicted_classes = predictions.argmax(axis=1)
 
-accuracy = f1_score(labels_valid, predicted_classes, average='macro')
-print(f"Validation F1_Score: {accuracy:.2f}")
+val_f1_score = f1_score(labels_valid, predicted_classes, average='macro')
+print(f"Validation F1_Score: {val_f1_score:.2f}")
 
 print("Classification Report:")
 print(classification_report(labels_valid, predicted_classes, target_names=label_encoder.classes_))
