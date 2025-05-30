@@ -20,6 +20,11 @@ Prerequisite : Python, modul keras
 
 Jalankan file .ipynb pada masing masing folder
 
+Untuk CNN, dapat dijalankan dengan :
+1. cnn_forward.py ; ini adalah modul implementasi forward propagation CNN yang bisa dipanggil.
+2. cnn_scratch_nb.ipynb : ini adalah notebook pengujian hasil implementasi scratch dengan tensorflow.
+3. notebook_eksperimen.ipynb : ini adalah notebook pengujian dengan tensorflow. 
+
 Untuk RNN, lakukan ini setelah menjalankan file .ipynb :
 
 1. Jalankan keras-reference.py
