@@ -1,11 +1,6 @@
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ["KERAS_BACKEND"] = "tensorflow"
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-import sys
-print(sys.executable)
-
 
 import keras
 from keras.api.layers import Embedding, LSTM, Bidirectional, Dropout, Dense, TextVectorization
@@ -20,24 +15,29 @@ data_valid = pd.read_csv("../datasets/NusaX-Sentiment-Indonesian/valid.csv")
 
 texts = data['text'].values
 
-# Konfigurasi TextVectorization
 tokenizer = TextVectorization(max_tokens=10000, output_mode="int", output_sequence_length=100)
-tokenizer.adapt(texts)  # Pelajari vocabulary dari teks
+tokenizer.adapt(texts)
 
-# TextVectorization pada text
 tokenized_texts = tokenizer(texts)
 
-# Build LSTM model
-model = Sequential([
+model_uni = Sequential([
     Embedding(input_dim=10000, output_dim=128),
-    LSTM(64),  # 64 hidden units
+    LSTM(64),
     Dropout(0.5), 
     Dense(3, activation="softmax")
 ])
 
-model.compile(loss="sparse_categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
+model_uni.compile(loss="sparse_categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
 
-# Encode labels
+model_bi = Sequential([
+    Embedding(input_dim=10000, output_dim=128),
+    Bidirectional(LSTM(32)),
+    Dropout(0.5),
+    Dense(3, activation="softmax")
+])
+
+model_bi.compile(loss="sparse_categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
+
 label_encoder = LabelEncoder()
 labels = label_encoder.fit_transform(data['label'].values)
 labels_valid = label_encoder.transform(data_valid['label'].values)
@@ -45,132 +45,172 @@ labels_valid = label_encoder.transform(data_valid['label'].values)
 texts_valid = data_valid['text'].values
 tokenized_texts_valid = tokenizer(texts_valid)
 
-# Train model
-print("Training LSTM model...")
-model.fit(
+model_uni.fit(
     tokenized_texts, labels,
     validation_data=(tokenized_texts_valid, labels_valid),
     epochs=3,
     verbose=1
 )
 
-# Get Keras predictions for comparison
-predictions = model.predict(tokenized_texts_valid)
-predicted_classes = predictions.argmax(axis=1)
+model_bi.fit(
+    tokenized_texts, labels,
+    validation_data=(tokenized_texts_valid, labels_valid),
+    epochs=3,
+    verbose=1
+)
 
-keras_f1_score = f1_score(labels_valid, predicted_classes, average='macro')
-print(f"Keras LSTM Validation F1_Score: {keras_f1_score:.4f}")
+predictions_uni = model_uni.predict(tokenized_texts_valid, verbose=0)
+predicted_classes_uni = predictions_uni.argmax(axis=1)
 
-# Save model weights
-model.save_weights("lstm.weights.h5")
+predictions_bi = model_bi.predict(tokenized_texts_valid, verbose=0)
+predicted_classes_bi = predictions_bi.argmax(axis=1)
 
-# ----------------------------------------------------------------------------------- #
-# Extract LSTM weights for manual implementation
-# ----------------------------------------------------------------------------------- #
+keras_f1_uni = f1_score(labels_valid, predicted_classes_uni, average='macro')
+keras_f1_bi = f1_score(labels_valid, predicted_classes_bi, average='macro')
 
-# Create new model with same architecture
-new_model = Sequential([
+# Save weights
+model_uni.save_weights("lstm_uni.weights.h5")
+model_bi.save_weights("lstm_bi.weights.h5")
+
+# Extract weights
+def extract_lstm_weights(model, is_bidirectional=False):
+    
+    embedding_matrix = model.layers[0].get_weights()[0]  # (10000, 128)
+    
+    if is_bidirectional:
+        bi_layer = model.layers[1]
+        
+        forward_weights = bi_layer.forward_layer.get_weights()
+        W_combined_f = forward_weights[0]
+        U_combined_f = forward_weights[1]
+        b_combined_f = forward_weights[2]
+        
+        backward_weights = bi_layer.backward_layer.get_weights()
+        W_combined_b = backward_weights[0]
+        U_combined_b = backward_weights[1]
+        b_combined_b = backward_weights[2]
+        
+        W_dense, b_dense = model.layers[3].get_weights()
+        
+        return (embedding_matrix, 
+                W_combined_f, U_combined_f, b_combined_f,
+                W_combined_b, U_combined_b, b_combined_b,
+                W_dense, b_dense)
+    else:
+        lstm_weights = model.layers[1].get_weights()
+        W_combined = lstm_weights[0]
+        U_combined = lstm_weights[1]
+        b_combined = lstm_weights[2]
+        
+        W_dense, b_dense = model.layers[3].get_weights()
+        
+        return (embedding_matrix, W_combined, U_combined, b_combined, W_dense, b_dense)
+
+def split_lstm_gates(W_combined, U_combined, b_combined, hidden_size):
+    
+    Wi = W_combined[:, :hidden_size]
+    Wf = W_combined[:, hidden_size:2*hidden_size]
+    Wc = W_combined[:, 2*hidden_size:3*hidden_size]
+    Wo = W_combined[:, 3*hidden_size:]
+
+    Ui = U_combined[:, :hidden_size]
+    Uf = U_combined[:, hidden_size:2*hidden_size]
+    Uc = U_combined[:, 2*hidden_size:3*hidden_size]
+    Uo = U_combined[:, 3*hidden_size:]
+
+    bi = b_combined[:hidden_size]
+    bf = b_combined[hidden_size:2*hidden_size]
+    bc = b_combined[2*hidden_size:3*hidden_size]
+    bo = b_combined[3*hidden_size:]
+    
+    return Wi, Wf, Wc, Wo, Ui, Uf, Uc, Uo, bi, bf, bc, bo
+
+new_model_uni = Sequential([
     Embedding(input_dim=10000, output_dim=128),
     LSTM(64),
     Dropout(0.5), 
     Dense(3, activation="softmax")
 ])
+new_model_uni.build(input_shape=(None, 100))
+new_model_uni.load_weights("lstm_uni.weights.h5")
 
-new_model.build(input_shape=(None, 100))
-new_model.load_weights("lstm.weights.h5")
+weights_uni = extract_lstm_weights(new_model_uni, is_bidirectional=False)
+embedding_matrix, W_combined, U_combined, b_combined, W_dense_uni, b_dense_uni = weights_uni
 
-# Extract layer weights
-embedding_matrix = new_model.layers[0].get_weights()[0]  # (10000, 128)
+Wi, Wf, Wc, Wo, Ui, Uf, Uc, Uo, bi, bf, bc, bo = split_lstm_gates(W_combined, U_combined, b_combined, 64)
 
-# LSTM layer weights - Keras combines all gates into single matrices
-lstm_weights = new_model.layers[1].get_weights()
-W_combined = lstm_weights[0]  # (input_dim, 4 * hidden_size) - Combined W for all gates
-U_combined = lstm_weights[1]  # (hidden_size, 4 * hidden_size) - Combined U for all gates  
-b_combined = lstm_weights[2]   # (4 * hidden_size,) - Combined biases
+new_model_bi = Sequential([
+    Embedding(input_dim=10000, output_dim=128),
+    Bidirectional(LSTM(32)),
+    Dropout(0.5),
+    Dense(3, activation="softmax")
+])
+new_model_bi.build(input_shape=(None, 100))
+new_model_bi.load_weights("lstm_bi.weights.h5")
 
-# Dense layer weights
-W_dense, b_dense = new_model.layers[3].get_weights()
+weights_bi = extract_lstm_weights(new_model_bi, is_bidirectional=True)
+(embedding_matrix_bi, W_combined_f, U_combined_f, b_combined_f,
+ W_combined_b, U_combined_b, b_combined_b, W_dense_bi, b_dense_bi) = weights_bi
 
-print(f"LSTM weights shapes:")
-print(f"W_combined: {W_combined.shape}")
-print(f"U_combined: {U_combined.shape}") 
-print(f"b_combined: {b_combined.shape}")
+Wi_f, Wf_f, Wc_f, Wo_f, Ui_f, Uf_f, Uc_f, Uo_f, bi_f, bf_f, bc_f, bo_f = split_lstm_gates(
+    W_combined_f, U_combined_f, b_combined_f, 32)
 
-# Split combined weights into individual gates
-# Keras order: [input, forget, cell, output] (i, f, c, o)
-hidden_size = 64
-input_dim = 128
+Wi_b, Wf_b, Wc_b, Wo_b, Ui_b, Uf_b, Uc_b, Uo_b, bi_b, bf_b, bc_b, bo_b = split_lstm_gates(
+    W_combined_b, U_combined_b, b_combined_b, 32)
 
-# Split W matrix (input-to-hidden weights)
-Wi = W_combined[:, :hidden_size]                    # Input gate
-Wf = W_combined[:, hidden_size:2*hidden_size]       # Forget gate  
-Wc = W_combined[:, 2*hidden_size:3*hidden_size]     # Cell/Candidate gate
-Wo = W_combined[:, 3*hidden_size:]                  # Output gate
+# Manual LSTM Forward
 
-# Split U matrix (hidden-to-hidden weights)
-Ui = U_combined[:, :hidden_size]                    # Input gate
-Uf = U_combined[:, hidden_size:2*hidden_size]       # Forget gate
-Uc = U_combined[:, 2*hidden_size:3*hidden_size]     # Cell/Candidate gate  
-Uo = U_combined[:, 3*hidden_size:]                  # Output gate
+from mylstm import embedding_forward, lstm_forward, bidirectional_lstm_forward, dense_forward, softmax
 
-# Split bias vector
-bi = b_combined[:hidden_size]                       # Input gate
-bf = b_combined[hidden_size:2*hidden_size]          # Forget gate
-bc = b_combined[2*hidden_size:3*hidden_size]        # Cell/Candidate gate
-bo = b_combined[3*hidden_size:]                     # Output gate
+N_SAMPLES = 20
+test_indices = range(min(N_SAMPLES, tokenized_texts_valid.shape[0]))
 
-print(f"\nSplit gate weights shapes:")
-print(f"Wi: {Wi.shape}, Ui: {Ui.shape}, bi: {bi.shape}")
-print(f"Wf: {Wf.shape}, Uf: {Uf.shape}, bf: {bf.shape}")
-print(f"Wc: {Wc.shape}, Uc: {Uc.shape}, bc: {bc.shape}")
-print(f"Wo: {Wo.shape}, Uo: {Uo.shape}, bo: {bo.shape}")
-
-# ----------------------------------------------------------------------------------- #
-# Manual LSTM Forward Pass
-# ----------------------------------------------------------------------------------- #
-
-from mylstm import embedding_forward, lstm_forward, dense_forward, softmax
-
-print("\nRunning manual LSTM forward pass...")
-
-# Manual forward pass for validation data
-manual_preds = []
-for i in range(min(50, tokenized_texts_valid.shape[0])):  # Test on first 50 samples
-    # Get embeddings
+manual_preds_uni = []
+for i in test_indices:
     emb = embedding_forward(tokenized_texts_valid[i], embedding_matrix)
     
-    # LSTM forward pass
     h_final, _, _ = lstm_forward(emb, Wf, Uf, bf, Wi, Ui, bi, Wo, Uo, bo, Wc, Uc, bc)
     
-    # Dense layer (no dropout during inference)
-    logits = dense_forward(h_final, W_dense, b_dense)
+    logits = dense_forward(h_final, W_dense_uni, b_dense_uni)
     
-    # Softmax
     probs = softmax(logits)
-    manual_preds.append(probs)
+    manual_preds_uni.append(probs)
 
-manual_preds = np.array(manual_preds)
-manual_pred_classes = manual_preds.argmax(axis=1)
+manual_preds_uni = np.array(manual_preds_uni)
+manual_pred_classes_uni = manual_preds_uni.argmax(axis=1)
 
-# Compare with Keras predictions (first 50 samples)
-keras_pred_classes_subset = predicted_classes[:len(manual_pred_classes)]
-labels_valid_subset = labels_valid[:len(manual_pred_classes)]
+manual_preds_bi = []
+for i in test_indices:
+    emb = embedding_forward(tokenized_texts_valid[i], embedding_matrix_bi)
+    
+    h_combined = bidirectional_lstm_forward(
+        emb,
+        Wf_f, Uf_f, bf_f, Wi_f, Ui_f, bi_f, Wo_f, Uo_f, bo_f, Wc_f, Uc_f, bc_f,
+        Wf_b, Uf_b, bf_b, Wi_b, Ui_b, bi_b, Wo_b, Uo_b, bo_b, Wc_b, Uc_b, bc_b
+    )
+    
+    logits = dense_forward(h_combined, W_dense_bi, b_dense_bi)
+    
+    probs = softmax(logits)
+    manual_preds_bi.append(probs)
 
-# Evaluation
-manual_f1 = f1_score(labels_valid_subset, manual_pred_classes, average='macro')
-keras_f1_subset = f1_score(labels_valid_subset, keras_pred_classes_subset, average='macro')
+manual_preds_bi = np.array(manual_preds_bi)
+manual_pred_classes_bi = manual_preds_bi.argmax(axis=1)
 
-print(f"\nComparison (first {len(manual_pred_classes)} samples):")
-print(f"Manual LSTM F1 Score: {manual_f1:.4f}")
-print(f"Keras LSTM F1 Score:  {keras_f1_subset:.4f}")
-print(f"Difference: {abs(manual_f1 - keras_f1_subset):.4f}")
+keras_pred_classes_uni_subset = predicted_classes_uni[:len(test_indices)]
+keras_pred_classes_bi_subset = predicted_classes_bi[:len(test_indices)]
+labels_valid_subset = labels_valid[:len(test_indices)]
 
-# Check if predictions match
-matches = (manual_pred_classes == keras_pred_classes_subset).sum()
-print(f"Matching predictions: {matches}/{len(manual_pred_classes)} ({matches/len(manual_pred_classes)*100:.1f}%)")
+manual_f1_uni = f1_score(labels_valid_subset, manual_pred_classes_uni, average='macro')
+manual_f1_bi = f1_score(labels_valid_subset, manual_pred_classes_bi, average='macro')
+keras_f1_uni_subset = f1_score(labels_valid_subset, keras_pred_classes_uni_subset, average='macro')
+keras_f1_bi_subset = f1_score(labels_valid_subset, keras_pred_classes_bi_subset, average='macro')
+    
+print(f"\n=== BIDIRECTIONAL vs UNIDIRECTIONAL COMPARISON ===")
+print(f"Manual Implementation:")
+print(f"  Unidirectional F1: {manual_f1_uni:.4f}")
+print(f"  Bidirectional F1:  {manual_f1_bi:.4f}")
 
-# Show some example predictions
-print(f"\nExample predictions (first 5):")
-print("Manual:", manual_pred_classes[:5])
-print("Keras: ", keras_pred_classes_subset[:5])
-print("True:  ", labels_valid_subset[:5])
+print(f"\nKeras Implementation:")
+print(f"  Unidirectional F1: {keras_f1_uni:.4f}")
+print(f"  Bidirectional F1:  {keras_f1_bi:.4f}")
